@@ -55,7 +55,7 @@ MONTAGE_DEFAULTS = {
 
 VIS_LABELS = {"bars": "Bars", "waveform": "Waveform", "circular": "Circular"}
 POSITION_LABELS = {"bottom": "Bottom", "top": "Top", "center_bottom": "Center bottom"}
-TRANSITION_LABELS = {"cut": "cut", "crossfade": "crossfade", "glitch": "glitch"}
+TRANSITION_LABELS = {"cut": "cut", "crossfade": "crossfade"}
 BEAT_LABELS = {"auto": "auto", "4_beats": "4 beats", "8_beats": "8 beats", "16_beats": "16 beats"}
 ORDER_LABELS = {"visual_match": "visual match", "random": "random", "quality_weighted": "quality weighted"}
 
@@ -215,7 +215,7 @@ async def cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
             config[choice] = not config[choice]
             await query.edit_message_reply_markup(reply_markup=kb_montage(config))
         elif choice == "transition_style":
-            config[choice] = cycle(config[choice], ["cut", "crossfade", "glitch"])
+            config[choice] = cycle(config[choice], ["cut", "crossfade"])
             await query.edit_message_reply_markup(reply_markup=kb_montage(config))
         elif choice == "beat_cut_mode":
             config[choice] = cycle(config[choice], ["auto", "4_beats", "8_beats", "16_beats"])
