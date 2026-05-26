@@ -1,4 +1,4 @@
-"""Railway Telegram bot: gathers render options and starts a Cloud Run job."""
+"""Railway Telegram bot: polished setup flow for montage render jobs."""
 
 import logging
 import os
@@ -17,31 +17,47 @@ CLOUD_RUN_URL = os.environ.get("CLOUD_RUN_URL", "")
 user_state = {}
 
 STYLES = {
-    "phonk": "Phonk Universe",
-    "japanese": "Japanese Trap",
-    "house": "Deep House",
+    "phonk": "🔥 Phonk Universe",
+    "japanese": "⛩ Japanese Trap",
+    "house": "🎧 Deep House",
 }
 
-# These choices are implemented in video_processor.py with native ffmpeg filters.
-EFFECTS_LABELS = {
-    "film_grain": "Плёнка / зерно",
-    "vignette": "Виньетка",
-    "chromatic_aberration": "Хроматика",
-    "vhs": "VHS",
-    "bloom": "Bloom / свечение",
+EFFECTS = {
+    "high_contrast": {"title": "High contrast", "emoji": "◐", "category": "🎨 Color / Look"},
+    "saturation_boost": {"title": "Saturation boost", "emoji": "🌈", "category": "🎨 Color / Look"},
+    "dark_phonk_grade": {"title": "Dark phonk grade", "emoji": "🌑", "category": "🎨 Color / Look"},
+    "cold_neon_grade": {"title": "Cold neon grade", "emoji": "🧊", "category": "🎨 Color / Look"},
+    "warm_gold_grade": {"title": "Warm gold grade", "emoji": "🌅", "category": "🎨 Color / Look"},
+    "film_grain": {"title": "Film grain", "emoji": "🎞", "category": "🎞 Texture"},
+    "vignette": {"title": "Vignette", "emoji": "🌘", "category": "🎞 Texture"},
+    "scanlines": {"title": "Scanlines", "emoji": "▤", "category": "🎞 Texture"},
+    "chromatic_aberration": {"title": "Chromatic aberration", "emoji": "⚡", "category": "⚡ Energy FX"},
 }
+EFFECT_CATEGORIES = ["🎨 Color / Look", "🎞 Texture", "⚡ Energy FX"]
 
-PRESET_EFFECTS = {
-    "phonk": {"film_grain": True, "vignette": True, "vhs": True, "chromatic_aberration": False, "bloom": False},
-    "japanese": {"film_grain": False, "vignette": True, "vhs": False, "chromatic_aberration": True, "bloom": True},
-    "house": {"film_grain": False, "vignette": False, "vhs": False, "chromatic_aberration": False, "bloom": True},
+VISUALIZER_DEFAULTS = {
+    "enabled": True,
+    "type": "bars",
+    "position": "bottom_overlay",
+    "size": "medium",
+    "background_opacity": "none",
+    "color": "purple",
+    "glow": "soft",
 }
-
-VIS_DEFAULTS = {
-    "phonk": {"type": "bars", "position": "bottom", "height": 80},
-    "japanese": {"type": "waveform", "position": "top", "height": 60},
-    "house": {"type": "circular", "position": "center_bottom", "height": 100},
+VISUALIZER_TYPES = {"bars": "▥ Bars", "waveform": "〰 Waveform"}
+VISUALIZER_POSITIONS = {
+    "bottom_overlay": "Bottom overlay",
+    "top_overlay": "Top overlay",
+    "center_bottom": "Center bottom",
+    "embedded_strip": "Embedded strip",
 }
+VISUALIZER_SIZES = {"small": "Small", "medium": "Medium", "large": "Large"}
+VISUALIZER_BACKGROUNDS = {"none": "None", "soft": "Soft", "medium": "Medium"}
+VISUALIZER_COLORS = {
+    "purple": "Purple", "red": "Red", "blue": "Blue", "gold": "Gold",
+    "white": "White", "cyan": "Cyan", "pink": "Pink",
+}
+VISUALIZER_GLOWS = {"off": "Off", "soft": "Soft", "strong": "Strong"}
 
 MONTAGE_DEFAULTS = {
     "allow_mirror": True,
@@ -52,12 +68,9 @@ MONTAGE_DEFAULTS = {
     "beat_cut_mode": "auto",
     "clip_order_mode": "visual_match",
 }
-
-VIS_LABELS = {"bars": "Bars", "waveform": "Waveform", "circular": "Circular"}
-POSITION_LABELS = {"bottom": "Bottom", "top": "Top", "center_bottom": "Center bottom"}
-TRANSITION_LABELS = {"cut": "cut", "crossfade": "crossfade"}
-BEAT_LABELS = {"auto": "auto", "4_beats": "4 beats", "8_beats": "8 beats", "16_beats": "16 beats"}
-ORDER_LABELS = {"visual_match": "visual match", "random": "random", "quality_weighted": "quality weighted"}
+TRANSITIONS = {"cut": "Clean seamless cut", "crossfade": "Crossfade"}
+BEAT_CUTS = {"auto": "Auto", "4_beats": "4 beats", "8_beats": "8 beats", "16_beats": "16 beats"}
+CLIP_ORDERS = {"visual_match": "Visual match", "random": "Random", "quality_weighted": "Quality weighted"}
 
 
 def is_authorized(uid: int) -> bool:
@@ -77,46 +90,53 @@ def kb_styles() -> InlineKeyboardMarkup:
     ])
 
 
+def effects_config() -> dict:
+    return {effect_id: False for effect_id in EFFECTS}
+
+
 def kb_effects(st: dict) -> InlineKeyboardMarkup:
-    rows = []
-    for key, label in EFFECTS_LABELS.items():
-        mark = "✅" if st["effects_config"].get(key, False) else "⬜"
-        rows.append([InlineKeyboardButton(f"{mark} {label}", callback_data=f"fx:{key}")])
-    rows.append([InlineKeyboardButton("Продолжить →", callback_data="fx:done")])
+    selected = st["effects_config"]
+    clean_mark = "✅" if not any(selected.values()) else "⬜"
+    rows = [[InlineKeyboardButton(f"{clean_mark} 🧼 Clean render / no effects", callback_data="fx:clean")]]
+    for category in EFFECT_CATEGORIES:
+        for effect_id, effect in EFFECTS.items():
+            if effect["category"] == category:
+                mark = "✅" if selected[effect_id] else "⬜"
+                rows.append([InlineKeyboardButton(
+                    f"{mark} {category.split()[0]} {effect['emoji']} {effect['title']}", callback_data=f"fx:{effect_id}"
+                )])
+    rows.append([InlineKeyboardButton("Continue to visualizer →", callback_data="fx:done")])
     return InlineKeyboardMarkup(rows)
 
 
 def kb_visualizer_type() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup([
-        [InlineKeyboardButton("Без визуализатора", callback_data="vis_type:none")],
-        [InlineKeyboardButton("Bars", callback_data="vis_type:bars"),
-         InlineKeyboardButton("Waveform", callback_data="vis_type:waveform")],
-        [InlineKeyboardButton("Circular", callback_data="vis_type:circular")],
+        [InlineKeyboardButton("🚫 No visualizer", callback_data="vis_type:none")],
+        [InlineKeyboardButton("▥ Bars", callback_data="vis_type:bars"),
+         InlineKeyboardButton("〰 Waveform", callback_data="vis_type:waveform")],
     ])
 
 
-def kb_visualizer_position() -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup([
-        [InlineKeyboardButton("Bottom", callback_data="vis_pos:bottom"),
-         InlineKeyboardButton("Top", callback_data="vis_pos:top")],
-        [InlineKeyboardButton("Center bottom", callback_data="vis_pos:center_bottom")],
-    ])
+def option_keyboard(prefix: str, options: dict) -> InlineKeyboardMarkup:
+    rows = [[InlineKeyboardButton(label, callback_data=f"{prefix}:{value}")]
+            for value, label in options.items()]
+    return InlineKeyboardMarkup(rows)
 
 
-def toggle_text(enabled: bool) -> str:
+def on_off(enabled: bool) -> str:
     return "ON" if enabled else "OFF"
 
 
 def kb_montage(config: dict) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup([
-        [InlineKeyboardButton(f"Mirror: {toggle_text(config['allow_mirror'])}", callback_data="montage:allow_mirror"),
-         InlineKeyboardButton(f"Reverse: {toggle_text(config['allow_reverse'])}", callback_data="montage:allow_reverse")],
-        [InlineKeyboardButton(f"Mirror + reverse: {toggle_text(config['allow_mirror_reverse'])}", callback_data="montage:allow_mirror_reverse")],
-        [InlineKeyboardButton(f"Random trim: {toggle_text(config['allow_random_trim'])}", callback_data="montage:allow_random_trim")],
-        [InlineKeyboardButton(f"Transition: {TRANSITION_LABELS[config['transition_style']]}", callback_data="montage:transition_style")],
-        [InlineKeyboardButton(f"Beat cuts: {BEAT_LABELS[config['beat_cut_mode']]}", callback_data="montage:beat_cut_mode")],
-        [InlineKeyboardButton(f"Order: {ORDER_LABELS[config['clip_order_mode']]}", callback_data="montage:clip_order_mode")],
-        [InlineKeyboardButton("Проверить настройки →", callback_data="montage:done")],
+        [InlineKeyboardButton(f"🪞 Mirror: {on_off(config['allow_mirror'])}", callback_data="montage:allow_mirror")],
+        [InlineKeyboardButton(f"↩ Reverse: {on_off(config['allow_reverse'])}", callback_data="montage:allow_reverse")],
+        [InlineKeyboardButton(f"🪞↩ Mirror + reverse: {on_off(config['allow_mirror_reverse'])}", callback_data="montage:allow_mirror_reverse")],
+        [InlineKeyboardButton(f"✂ Random trim: {on_off(config['allow_random_trim'])}", callback_data="montage:allow_random_trim")],
+        [InlineKeyboardButton(f"Transition: {TRANSITIONS[config['transition_style']]}", callback_data="montage:transition_style")],
+        [InlineKeyboardButton(f"Beat cut: {BEAT_CUTS[config['beat_cut_mode']]}", callback_data="montage:beat_cut_mode")],
+        [InlineKeyboardButton(f"Clip order: {CLIP_ORDERS[config['clip_order_mode']]}", callback_data="montage:clip_order_mode")],
+        [InlineKeyboardButton("Review setup →", callback_data="montage:done")],
     ])
 
 
@@ -124,27 +144,42 @@ def cycle(current: str, choices: list[str]) -> str:
     return choices[(choices.index(current) + 1) % len(choices)]
 
 
+def montage_text() -> str:
+    return (
+        "🎬 *Montage settings*\n\n"
+        "Toggle options and choose an edit rhythm.\n\n"
+        "🪞 Mirror is usually safe.\n"
+        "↩ Reverse should be disabled for walking or directional clips.\n"
+        "✂ Random trim helps repeated clips feel less repetitive.\n"
+        "🎨 Visual match orders clips by color, brightness and motion compatibility."
+    )
+
+
 def summary_text(st: dict) -> str:
-    effects = [label for key, label in EFFECTS_LABELS.items() if st["effects_config"].get(key)]
+    selected_effects = [
+        f"{effect['emoji']} {effect['title']}"
+        for effect_id, effect in EFFECTS.items()
+        if st["effects_config"][effect_id]
+    ]
     vis = st["visualizer_config"]
     if vis["enabled"]:
-        visualizer = f"{VIS_LABELS[vis['type']]}, {POSITION_LABELS[vis['position']]}, {vis['height']} px"
+        visualizer = (
+            f"{VISUALIZER_TYPES[vis['type']]}; {VISUALIZER_POSITIONS[vis['position']]}; "
+            f"{VISUALIZER_SIZES[vis['size']]}; background {VISUALIZER_BACKGROUNDS[vis['background_opacity']]}; "
+            f"{VISUALIZER_COLORS[vis['color']]}; glow {VISUALIZER_GLOWS[vis['glow']]}"
+        )
     else:
-        visualizer = "выключен"
+        visualizer = "🚫 No visualizer"
     montage = st["montage_config"]
-    variants = [
-        f"mirror {toggle_text(montage['allow_mirror'])}",
-        f"reverse {toggle_text(montage['allow_reverse'])}",
-        f"mirror+reverse {toggle_text(montage['allow_mirror_reverse'])}",
-        f"random trim {toggle_text(montage['allow_random_trim'])}",
-    ]
     return (
-        "*Итоговые настройки*\n\n"
+        "✅ *Final summary*\n\n"
         f"*Style:* {STYLES[st['style']]}\n"
-        f"*Effects:* {', '.join(effects) if effects else 'выключены'}\n"
+        f"*Effects:* {', '.join(selected_effects) if selected_effects else '🧼 Clean render / no effects'}\n"
         f"*Visualizer:* {visualizer}\n"
-        f"*Montage:* {', '.join(variants)}; transition {montage['transition_style']}; "
-        f"cuts {BEAT_LABELS[montage['beat_cut_mode']]}; order {ORDER_LABELS[montage['clip_order_mode']]}"
+        f"*Montage:* mirror {on_off(montage['allow_mirror'])}, reverse {on_off(montage['allow_reverse'])}, "
+        f"mirror+reverse {on_off(montage['allow_mirror_reverse'])}, random trim {on_off(montage['allow_random_trim'])}; "
+        f"{TRANSITIONS[montage['transition_style']]}; {BEAT_CUTS[montage['beat_cut_mode']]}; "
+        f"{CLIP_ORDERS[montage['clip_order_mode']]}"
     )
 
 
@@ -154,7 +189,9 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     user_state[uid] = {}
     await update.message.reply_text(
-        "🎬 *VIDEO MONTAGE BOT*\n\nВыбери стиль:",
+        "🎬 *VIDEO MONTAGE BOT*\n\n"
+        "Create a beat-aware montage from your selected clips.\n\n"
+        "Choose a style to begin:",
         parse_mode="Markdown",
         reply_markup=kb_styles(),
     )
@@ -168,28 +205,36 @@ async def cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     data = query.data
     st = state(uid)
-
     if data.startswith("style:"):
         style = data.split(":", 1)[1]
         st.update({
             "style": style,
-            "effects_config": dict(PRESET_EFFECTS[style]),
-            "visualizer_config": {"enabled": True, **VIS_DEFAULTS[style]},
+            "effects_config": effects_config(),
+            "visualizer_config": dict(VISUALIZER_DEFAULTS),
             "montage_config": dict(MONTAGE_DEFAULTS),
         })
         await query.edit_message_text(
-            f"Стиль: *{STYLES[style]}*\n\nВыбери эффекты:",
+            f"{STYLES[style]}\n\n✨ *Effects*\n"
+            "Select any combination, or keep a clean render.\n\n"
+            "🎨 Color / Look\n🎞 Texture\n⚡ Energy FX",
             parse_mode="Markdown",
             reply_markup=kb_effects(st),
         )
         return
 
     if data.startswith("fx:"):
-        effect = data.split(":", 1)[1]
-        if effect == "done":
-            await query.edit_message_text("Выбери визуализатор:", reply_markup=kb_visualizer_type())
-        elif effect in EFFECTS_LABELS:
-            st["effects_config"][effect] = not st["effects_config"].get(effect, False)
+        effect_id = data.split(":", 1)[1]
+        if effect_id == "done":
+            await query.edit_message_text(
+                "📊 *Visualizer*\n\nChoose an overlay style, or keep the video clean.",
+                parse_mode="Markdown",
+                reply_markup=kb_visualizer_type(),
+            )
+        elif effect_id == "clean":
+            st["effects_config"] = effects_config()
+            await query.edit_message_reply_markup(reply_markup=kb_effects(st))
+        elif effect_id in EFFECTS:
+            st["effects_config"][effect_id] = not st["effects_config"][effect_id]
             await query.edit_message_reply_markup(reply_markup=kb_effects(st))
         return
 
@@ -197,15 +242,43 @@ async def cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
         vis_type = data.split(":", 1)[1]
         if vis_type == "none":
             st["visualizer_config"]["enabled"] = False
-            await query.edit_message_text("Настрой монтаж:", reply_markup=kb_montage(st["montage_config"]))
-        else:
+            await query.edit_message_text(montage_text(), parse_mode="Markdown", reply_markup=kb_montage(st["montage_config"]))
+        elif vis_type in VISUALIZER_TYPES:
             st["visualizer_config"].update({"enabled": True, "type": vis_type})
-            await query.edit_message_text("Где разместить визуализатор?", reply_markup=kb_visualizer_position())
+            await query.edit_message_text(
+                "📍 *Visualizer placement*\n\nOverlay placements keep your full video frame visible.",
+                parse_mode="Markdown",
+                reply_markup=option_keyboard("vis_pos", VISUALIZER_POSITIONS),
+            )
         return
 
     if data.startswith("vis_pos:"):
         st["visualizer_config"]["position"] = data.split(":", 1)[1]
-        await query.edit_message_text("Настрой монтаж:", reply_markup=kb_montage(st["montage_config"]))
+        await query.edit_message_text("📐 *Visualizer size*", parse_mode="Markdown", reply_markup=option_keyboard("vis_size", VISUALIZER_SIZES))
+        return
+
+    if data.startswith("vis_size:"):
+        st["visualizer_config"]["size"] = data.split(":", 1)[1]
+        await query.edit_message_text(
+            "◼ *Background opacity*\n\nOnly Embedded strip uses a visible panel by design.",
+            parse_mode="Markdown",
+            reply_markup=option_keyboard("vis_bg", VISUALIZER_BACKGROUNDS),
+        )
+        return
+
+    if data.startswith("vis_bg:"):
+        st["visualizer_config"]["background_opacity"] = data.split(":", 1)[1]
+        await query.edit_message_text("🎨 *Visualizer color*", parse_mode="Markdown", reply_markup=option_keyboard("vis_color", VISUALIZER_COLORS))
+        return
+
+    if data.startswith("vis_color:"):
+        st["visualizer_config"]["color"] = data.split(":", 1)[1]
+        await query.edit_message_text("✨ *Visualizer glow*", parse_mode="Markdown", reply_markup=option_keyboard("vis_glow", VISUALIZER_GLOWS))
+        return
+
+    if data.startswith("vis_glow:"):
+        st["visualizer_config"]["glow"] = data.split(":", 1)[1]
+        await query.edit_message_text(montage_text(), parse_mode="Markdown", reply_markup=kb_montage(st["montage_config"]))
         return
 
     if data.startswith("montage:"):
@@ -215,13 +288,13 @@ async def cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
             config[choice] = not config[choice]
             await query.edit_message_reply_markup(reply_markup=kb_montage(config))
         elif choice == "transition_style":
-            config[choice] = cycle(config[choice], ["cut", "crossfade"])
+            config[choice] = cycle(config[choice], list(TRANSITIONS))
             await query.edit_message_reply_markup(reply_markup=kb_montage(config))
         elif choice == "beat_cut_mode":
-            config[choice] = cycle(config[choice], ["auto", "4_beats", "8_beats", "16_beats"])
+            config[choice] = cycle(config[choice], list(BEAT_CUTS))
             await query.edit_message_reply_markup(reply_markup=kb_montage(config))
         elif choice == "clip_order_mode":
-            config[choice] = cycle(config[choice], ["visual_match", "random", "quality_weighted"])
+            config[choice] = cycle(config[choice], list(CLIP_ORDERS))
             await query.edit_message_reply_markup(reply_markup=kb_montage(config))
         elif choice == "done":
             await query.edit_message_text(
@@ -236,8 +309,7 @@ async def cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if data == "setup:start":
         st["step"] = "awaiting_video_link"
         await query.edit_message_text(
-            "📁 Отправь ссылку на папку Google Drive с *видеоклипами* (MP4).\n\n"
-            "Папка должна быть открыта по ссылке, а сервисный аккаунт добавлен как Editor.",
+            "📁 *Video clips*\n\nSend the Google Drive folder link containing your selected MP4 clips.",
             parse_mode="Markdown",
         )
 
@@ -250,30 +322,27 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = update.message.text.strip()
     if st.get("step") == "awaiting_video_link":
         if "drive.google.com" not in text:
-            await update.message.reply_text("Нужна ссылка на папку Google Drive.")
+            await update.message.reply_text("Please send a Google Drive folder link.")
             return
         st["video_link"] = text
         st["step"] = "awaiting_audio_link"
-        await update.message.reply_text(
-            "Видео принято. Теперь отправь ссылку на *аудиофайл* MP3 в Google Drive:",
-            parse_mode="Markdown",
-        )
+        await update.message.reply_text("🎵 Video folder accepted. Now send the Google Drive link for your MP3 track.")
     elif st.get("step") == "awaiting_audio_link":
         if "drive.google.com" not in text:
-            await update.message.reply_text("Нужна ссылка на аудиофайл Google Drive.")
+            await update.message.reply_text("Please send a Google Drive audio file link.")
             return
         st["audio_link"] = text
         st["step"] = "processing"
         await launch_render_job(update, uid)
     else:
-        await update.message.reply_text("Напиши /start, чтобы начать.")
+        await update.message.reply_text("Send /start to create a new montage.")
 
 
 async def launch_render_job(update: Update, uid: int):
     st = state(uid)
-    message = await update.message.reply_text("Отправляю задание на рендер. Прогресс появится здесь в сообщениях.")
+    message = await update.message.reply_text("🚀 Sending your montage job to the renderer...")
     if not CLOUD_RUN_URL:
-        await message.edit_text("CLOUD_RUN_URL не настроен.")
+        await message.edit_text("CLOUD_RUN_URL is not configured.")
         return
     payload = {
         "style": st["style"],
@@ -294,20 +363,23 @@ async def launch_render_job(update: Update, uid: int):
             ) as response:
                 if response.status == 200:
                     result = await response.json()
-                    await message.edit_text(f"✅ Задание принято. Job ID: `{result.get('job_id', 'unknown')}`", parse_mode="Markdown")
+                    await message.edit_text(
+                        f"0% Job accepted.\nJob ID: `{result.get('job_id', 'unknown')}`",
+                        parse_mode="Markdown",
+                    )
                 else:
-                    await message.edit_text(f"Ошибка сервера: {response.status}")
+                    await message.edit_text(f"Renderer returned an error: {response.status}")
     except Exception as exc:
         logger.error("Cloud Run error: %s", exc)
-        await message.edit_text(f"Не могу связаться с сервером рендера: {str(exc)[:200]}")
+        await message.edit_text(f"Cannot contact the rendering service: {str(exc)[:200]}")
     st["step"] = "done"
 
 
 async def help_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         "🎬 *VIDEO MONTAGE BOT*\n\n"
-        "*/start* — новый монтаж\n"
-        "Выбери стиль, реальные эффекты, визуализатор и параметры монтажа, затем отправь ссылки Drive.",
+        "*/start* — create a new montage\n\n"
+        "Choose a style, real render effects, a visualizer overlay and montage rhythm, then send Drive links.",
         parse_mode="Markdown",
     )
 
