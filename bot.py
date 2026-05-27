@@ -37,15 +37,22 @@ EFFECT_CATEGORIES = ["🎨 Color / Look", "🎞 Texture", "⚡ Energy FX"]
 
 VISUALIZER_DEFAULTS = {
     "enabled": True,
-    "type": "bars",
+    "type": "waveform",
     "position": "bottom_overlay",
-    "size": "medium",
+    "size": "small",
     "background_opacity": "none",
-    "color": "purple",
+    "color": "white",
     "glow": "soft",
     "intensity": "normal",
 }
-VISUALIZER_TYPES = {"bars": "▥ Bars", "waveform": "〰 Waveform"}
+VISUALIZER_TYPES = {
+    "waveform": "〰 Waveform",
+    "minimal_corner_bars": "▥ Minimal corner bars",
+    "label_bars": "▥ Bottom-left label bars",
+    "thin_waveform": "〰 Thin waveform",
+    "compact_waveform": "〰 Compact waveform",
+    "bars": "▥ Full-width bars",
+}
 VISUALIZER_POSITIONS = {
     "bottom_overlay": "Bottom overlay",
     "top_overlay": "Top overlay",
@@ -123,11 +130,12 @@ def kb_effects(st: dict) -> InlineKeyboardMarkup:
 
 
 def kb_visualizer_type() -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup([
-        [InlineKeyboardButton("🚫 No visualizer", callback_data="vis_type:none")],
-        [InlineKeyboardButton("▥ Bars", callback_data="vis_type:bars"),
-         InlineKeyboardButton("〰 Waveform", callback_data="vis_type:waveform")],
-    ])
+    return InlineKeyboardMarkup(
+        [[InlineKeyboardButton("🚫 No visualizer", callback_data="vis_type:none")]] + [
+        [InlineKeyboardButton(label, callback_data=f"vis_type:{vis_type}")]
+        for vis_type, label in VISUALIZER_TYPES.items()
+        ]
+    )
 
 
 def option_keyboard(prefix: str, options: dict) -> InlineKeyboardMarkup:
@@ -278,7 +286,7 @@ async def cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if intensity in EFFECT_INTENSITIES:
             st["effects_intensity"] = intensity
             await query.edit_message_text(
-                "📊 *Visualizer*\n\nChoose an overlay style, or keep the video clean.",
+                "📊 *Visualizer*\n\nChoose an overlay style. Waveform is the recommended clean option.",
                 parse_mode="Markdown",
                 reply_markup=kb_visualizer_type(),
             )
@@ -325,7 +333,7 @@ async def cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if data.startswith("vis_glow:"):
         st["visualizer_config"]["glow"] = data.split(":", 1)[1]
         await query.edit_message_text(
-            "🎚 *Visualizer intensity*\n\nControl the amplitude of the Bars or Waveform overlay.",
+            "🎚 *Visualizer intensity*\n\nControl the amplitude of the selected overlay.",
             parse_mode="Markdown",
             reply_markup=option_keyboard("vis_intensity", VISUALIZER_INTENSITIES),
         )
