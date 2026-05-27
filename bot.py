@@ -43,6 +43,7 @@ VISUALIZER_DEFAULTS = {
     "background_opacity": "none",
     "color": "purple",
     "glow": "soft",
+    "intensity": "normal",
 }
 VISUALIZER_TYPES = {"bars": "▥ Bars", "waveform": "〰 Waveform"}
 VISUALIZER_POSITIONS = {
@@ -58,6 +59,12 @@ VISUALIZER_COLORS = {
     "white": "White", "cyan": "Cyan", "pink": "Pink",
 }
 VISUALIZER_GLOWS = {"off": "Off", "soft": "Soft", "strong": "Strong"}
+VISUALIZER_INTENSITIES = {"soft": "Soft", "normal": "Normal", "strong": "Strong"}
+EFFECT_INTENSITIES = {
+    "soft": "Soft - subtle look",
+    "normal": "Normal - balanced visible effect",
+    "strong": "Strong - expressive/music-video look",
+}
 
 MONTAGE_DEFAULTS = {
     "allow_mirror": True,
@@ -105,7 +112,7 @@ def kb_effects(st: dict) -> InlineKeyboardMarkup:
                 rows.append([InlineKeyboardButton(
                     f"{mark} {category.split()[0]} {effect['emoji']} {effect['title']}", callback_data=f"fx:{effect_id}"
                 )])
-    rows.append([InlineKeyboardButton("Continue to visualizer →", callback_data="fx:done")])
+    rows.append([InlineKeyboardButton("Continue →", callback_data="fx:done")])
     return InlineKeyboardMarkup(rows)
 
 
@@ -166,7 +173,8 @@ def summary_text(st: dict) -> str:
         visualizer = (
             f"{VISUALIZER_TYPES[vis['type']]}; {VISUALIZER_POSITIONS[vis['position']]}; "
             f"{VISUALIZER_SIZES[vis['size']]}; background {VISUALIZER_BACKGROUNDS[vis['background_opacity']]}; "
-            f"{VISUALIZER_COLORS[vis['color']]}; glow {VISUALIZER_GLOWS[vis['glow']]}"
+            f"{VISUALIZER_COLORS[vis['color']]}; glow {VISUALIZER_GLOWS[vis['glow']]}; "
+            f"intensity {VISUALIZER_INTENSITIES[vis['intensity']]}"
         )
     else:
         visualizer = "🚫 No visualizer"
@@ -175,6 +183,8 @@ def summary_text(st: dict) -> str:
         "✅ *Final summary*\n\n"
         f"*Style:* {STYLES[st['style']]}\n"
         f"*Effects:* {', '.join(selected_effects) if selected_effects else '🧼 Clean render / no effects'}\n"
+        f"*Effects intensity:* {st['effects_intensity'].title()}"
+        f"{' (ignored for clean render)' if not selected_effects else ''}\n"
         f"*Visualizer:* {visualizer}\n"
         f"*Montage:* mirror {on_off(montage['allow_mirror'])}, reverse {on_off(montage['allow_reverse'])}, "
         f"mirror+reverse {on_off(montage['allow_mirror_reverse'])}, random trim {on_off(montage['allow_random_trim'])}; "
@@ -210,6 +220,7 @@ async def cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
         st.update({
             "style": style,
             "effects_config": effects_config(),
+            "effects_intensity": "normal",
             "visualizer_config": dict(VISUALIZER_DEFAULTS),
             "montage_config": dict(MONTAGE_DEFAULTS),
         })
@@ -226,9 +237,11 @@ async def cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
         effect_id = data.split(":", 1)[1]
         if effect_id == "done":
             await query.edit_message_text(
-                "📊 *Visualizer*\n\nChoose an overlay style, or keep the video clean.",
+                "🎚 *Effects intensity*\n\n"
+                "Choose one strength for all selected effects.\n"
+                "Clean render ignores this setting.",
                 parse_mode="Markdown",
-                reply_markup=kb_visualizer_type(),
+                reply_markup=option_keyboard("fx_intensity", EFFECT_INTENSITIES),
             )
         elif effect_id == "clean":
             st["effects_config"] = effects_config()
@@ -236,6 +249,17 @@ async def cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
         elif effect_id in EFFECTS:
             st["effects_config"][effect_id] = not st["effects_config"][effect_id]
             await query.edit_message_reply_markup(reply_markup=kb_effects(st))
+        return
+
+    if data.startswith("fx_intensity:"):
+        intensity = data.split(":", 1)[1]
+        if intensity in EFFECT_INTENSITIES:
+            st["effects_intensity"] = intensity
+            await query.edit_message_text(
+                "📊 *Visualizer*\n\nChoose an overlay style, or keep the video clean.",
+                parse_mode="Markdown",
+                reply_markup=kb_visualizer_type(),
+            )
         return
 
     if data.startswith("vis_type:"):
@@ -278,6 +302,17 @@ async def cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if data.startswith("vis_glow:"):
         st["visualizer_config"]["glow"] = data.split(":", 1)[1]
+        await query.edit_message_text(
+            "🎚 *Visualizer intensity*\n\nControl the amplitude of the Bars or Waveform overlay.",
+            parse_mode="Markdown",
+            reply_markup=option_keyboard("vis_intensity", VISUALIZER_INTENSITIES),
+        )
+        return
+
+    if data.startswith("vis_intensity:"):
+        intensity = data.split(":", 1)[1]
+        if intensity in VISUALIZER_INTENSITIES:
+            st["visualizer_config"]["intensity"] = intensity
         await query.edit_message_text(montage_text(), parse_mode="Markdown", reply_markup=kb_montage(st["montage_config"]))
         return
 
@@ -347,6 +382,7 @@ async def launch_render_job(update: Update, uid: int):
     payload = {
         "style": st["style"],
         "effects_config": st["effects_config"],
+        "effects_intensity": st["effects_intensity"],
         "visualizer_config": st["visualizer_config"],
         "montage_config": st["montage_config"],
         "video_link": st["video_link"],
