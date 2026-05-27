@@ -38,7 +38,7 @@ EFFECT_CATEGORIES = ["🎨 Color / Look", "🎞 Texture", "⚡ Energy FX"]
 VISUALIZER_DEFAULTS = {
     "enabled": True,
     "type": "waveform",
-    "position": "bottom_overlay",
+    "position": "bottom",
     "size": "small",
     "background_opacity": "none",
     "color": "white",
@@ -46,19 +46,22 @@ VISUALIZER_DEFAULTS = {
     "intensity": "normal",
 }
 VISUALIZER_TYPES = {
-    "waveform": "〰 Waveform",
-    "minimal_corner_bars": "▥ Minimal corner bars",
-    "label_bars": "▥ Bottom-left label bars",
-    "thin_waveform": "〰 Thin waveform",
-    "compact_waveform": "〰 Compact waveform",
-    "bars": "▥ Full-width bars",
+    "waveform": "Waveform",
+    "thin_waveform": "Thin waveform",
+    "compact_waveform": "Compact waveform",
+    "minimal_corner_bars": "Minimal corner bars",
+    "label_bars": "Corner label bars",
+    "bars": "Full-width bars",
 }
-VISUALIZER_POSITIONS = {
-    "bottom_overlay": "Bottom overlay",
-    "top_overlay": "Top overlay",
-    "center_bottom": "Center bottom",
-    "embedded_strip": "Embedded strip",
+STRIP_VISUALIZERS = {"waveform", "thin_waveform", "bars"}
+VISUALIZER_STRIP_POSITIONS = {"bottom": "Bottom", "top": "Top"}
+VISUALIZER_CORNER_POSITIONS = {
+    "bottom_left": "Bottom left",
+    "bottom_right": "Bottom right",
+    "top_left": "Top left",
+    "top_right": "Top right",
 }
+VISUALIZER_POSITION_LABELS = {**VISUALIZER_STRIP_POSITIONS, **VISUALIZER_CORNER_POSITIONS}
 VISUALIZER_SIZES = {"small": "Small", "medium": "Medium", "large": "Large"}
 VISUALIZER_BACKGROUNDS = {"none": "None", "soft": "Soft", "medium": "Medium"}
 VISUALIZER_COLORS = {
@@ -144,6 +147,15 @@ def option_keyboard(prefix: str, options: dict) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(rows)
 
 
+def visualizer_positions(vis_type: str) -> dict:
+    return VISUALIZER_STRIP_POSITIONS if vis_type in STRIP_VISUALIZERS else VISUALIZER_CORNER_POSITIONS
+
+
+def visualizer_position_label(position: str) -> str:
+    legacy_positions = {"bottom_overlay": "bottom", "top_overlay": "top", "center_bottom": "bottom"}
+    return VISUALIZER_POSITION_LABELS.get(legacy_positions.get(position, position), "Bottom")
+
+
 def on_off(enabled: bool) -> str:
     return "ON" if enabled else "OFF"
 
@@ -200,10 +212,9 @@ def summary_text(st: dict) -> str:
     vis = st["visualizer_config"]
     if vis["enabled"]:
         visualizer = (
-            f"{VISUALIZER_TYPES[vis['type']]}; {VISUALIZER_POSITIONS[vis['position']]}; "
-            f"{VISUALIZER_SIZES[vis['size']]}; background {VISUALIZER_BACKGROUNDS[vis['background_opacity']]}; "
-            f"{VISUALIZER_COLORS[vis['color']]}; glow {VISUALIZER_GLOWS[vis['glow']]}; "
-            f"intensity {VISUALIZER_INTENSITIES[vis['intensity']]}"
+            f"{VISUALIZER_TYPES[vis['type']]}; {visualizer_position_label(vis['position']).lower()}; "
+            f"size {VISUALIZER_SIZES[vis['size']].lower()}; color {VISUALIZER_COLORS[vis['color']].lower()}; "
+            f"background {VISUALIZER_BACKGROUNDS[vis['background_opacity']].lower()}"
         )
     else:
         visualizer = "🚫 No visualizer"
@@ -298,11 +309,13 @@ async def cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
             st["visualizer_config"]["enabled"] = False
             await query.edit_message_text(montage_text(), parse_mode="Markdown", reply_markup=kb_montage(st["montage_config"]))
         elif vis_type in VISUALIZER_TYPES:
-            st["visualizer_config"].update({"enabled": True, "type": vis_type})
+            positions = visualizer_positions(vis_type)
+            default_position = next(iter(positions))
+            st["visualizer_config"].update({"enabled": True, "type": vis_type, "position": default_position})
             await query.edit_message_text(
-                "📍 *Visualizer placement*\n\nOverlay placements keep your full video frame visible.",
+                "📍 *Visualizer placement*" if vis_type in STRIP_VISUALIZERS else "📍 *Visualizer position*",
                 parse_mode="Markdown",
-                reply_markup=option_keyboard("vis_pos", VISUALIZER_POSITIONS),
+                reply_markup=option_keyboard("vis_pos", positions),
             )
         return
 
@@ -313,8 +326,13 @@ async def cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if data.startswith("vis_size:"):
         st["visualizer_config"]["size"] = data.split(":", 1)[1]
+        await query.edit_message_text("🎨 *Visualizer color*", parse_mode="Markdown", reply_markup=option_keyboard("vis_color", VISUALIZER_COLORS))
+        return
+
+    if data.startswith("vis_color:"):
+        st["visualizer_config"]["color"] = data.split(":", 1)[1]
         await query.edit_message_text(
-            "◼ *Background opacity*\n\nOnly Embedded strip uses a visible panel by design.",
+            "◼ *Visualizer background*\n\nNone has no panel. Soft and Medium add a semi-transparent backing.",
             parse_mode="Markdown",
             reply_markup=option_keyboard("vis_bg", VISUALIZER_BACKGROUNDS),
         )
@@ -322,27 +340,6 @@ async def cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if data.startswith("vis_bg:"):
         st["visualizer_config"]["background_opacity"] = data.split(":", 1)[1]
-        await query.edit_message_text("🎨 *Visualizer color*", parse_mode="Markdown", reply_markup=option_keyboard("vis_color", VISUALIZER_COLORS))
-        return
-
-    if data.startswith("vis_color:"):
-        st["visualizer_config"]["color"] = data.split(":", 1)[1]
-        await query.edit_message_text("✨ *Visualizer glow*", parse_mode="Markdown", reply_markup=option_keyboard("vis_glow", VISUALIZER_GLOWS))
-        return
-
-    if data.startswith("vis_glow:"):
-        st["visualizer_config"]["glow"] = data.split(":", 1)[1]
-        await query.edit_message_text(
-            "🎚 *Visualizer intensity*\n\nControl the amplitude of the selected overlay.",
-            parse_mode="Markdown",
-            reply_markup=option_keyboard("vis_intensity", VISUALIZER_INTENSITIES),
-        )
-        return
-
-    if data.startswith("vis_intensity:"):
-        intensity = data.split(":", 1)[1]
-        if intensity in VISUALIZER_INTENSITIES:
-            st["visualizer_config"]["intensity"] = intensity
         await query.edit_message_text(montage_text(), parse_mode="Markdown", reply_markup=kb_montage(st["montage_config"]))
         return
 
