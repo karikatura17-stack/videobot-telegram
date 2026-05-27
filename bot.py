@@ -74,10 +74,16 @@ MONTAGE_DEFAULTS = {
     "transition_style": "cut",
     "beat_cut_mode": "auto",
     "clip_order_mode": "visual_match",
+    "speed_accents_mode": "off",
+    "speed_accents_amount": 0.20,
+    "speed_accents_speed": 1.25,
 }
 TRANSITIONS = {"cut": "Clean seamless cut", "crossfade": "Crossfade"}
 BEAT_CUTS = {"auto": "Auto", "4_beats": "4 beats", "8_beats": "8 beats", "16_beats": "16 beats"}
 CLIP_ORDERS = {"visual_match": "Visual match", "random": "Random", "quality_weighted": "Quality weighted"}
+SPEED_ACCENT_MODES = {"off": "OFF", "auto": "AUTO", "manual": "MANUAL"}
+SPEED_ACCENT_AMOUNTS = {0.10: "10% of segments", 0.20: "20% of segments", 0.30: "30% of segments"}
+SPEED_ACCENT_SPEEDS = {1.15: "1.15x", 1.25: "1.25x", 1.35: "1.35x", 1.50: "1.50x"}
 
 
 def is_authorized(uid: int) -> bool:
@@ -143,8 +149,13 @@ def kb_montage(config: dict) -> InlineKeyboardMarkup:
         [InlineKeyboardButton(f"Transition: {TRANSITIONS[config['transition_style']]}", callback_data="montage:transition_style")],
         [InlineKeyboardButton(f"Beat cut: {BEAT_CUTS[config['beat_cut_mode']]}", callback_data="montage:beat_cut_mode")],
         [InlineKeyboardButton(f"Clip order: {CLIP_ORDERS[config['clip_order_mode']]}", callback_data="montage:clip_order_mode")],
+        [InlineKeyboardButton(f"⚡ Speed accents: {SPEED_ACCENT_MODES[config['speed_accents_mode']]}", callback_data="montage:speed_accents_mode")],
         [InlineKeyboardButton("Review setup →", callback_data="montage:done")],
     ])
+
+
+def kb_speed_accents_mode() -> InlineKeyboardMarkup:
+    return option_keyboard("speed_mode", SPEED_ACCENT_MODES)
 
 
 def cycle(current: str, choices: list[str]) -> str:
@@ -158,8 +169,18 @@ def montage_text() -> str:
         "🪞 Mirror is usually safe.\n"
         "↩ Reverse should be disabled for walking or directional clips.\n"
         "✂ Random trim helps repeated clips feel less repetitive.\n"
-        "🎨 Visual match orders clips by color, brightness and motion compatibility."
+        "🎨 Visual match orders clips by color, brightness and motion compatibility.\n\n"
+        "⚡ Speed accents randomly speed up selected video segments under the beat.\n"
+        "Use AUTO for quick testing. MANUAL 10-20% at 1.15x-1.25x keeps edits clean.\n"
+        "Use 30% at 1.35x-1.50x only for dynamic edits. Audio is never changed."
     )
+
+
+def speed_accents_summary(config: dict) -> str:
+    mode = config["speed_accents_mode"]
+    if mode != "manual":
+        return SPEED_ACCENT_MODES[mode]
+    return f"MANUAL, {config['speed_accents_amount']:.0%}, {config['speed_accents_speed']:.2f}x"
 
 
 def summary_text(st: dict) -> str:
@@ -186,6 +207,7 @@ def summary_text(st: dict) -> str:
         f"*Effects intensity:* {st['effects_intensity'].title()}"
         f"{' (ignored for clean render)' if not selected_effects else ''}\n"
         f"*Visualizer:* {visualizer}\n"
+        f"*Speed accents:* {speed_accents_summary(montage)}\n"
         f"*Montage:* mirror {on_off(montage['allow_mirror'])}, reverse {on_off(montage['allow_reverse'])}, "
         f"mirror+reverse {on_off(montage['allow_mirror_reverse'])}, random trim {on_off(montage['allow_random_trim'])}; "
         f"{TRANSITIONS[montage['transition_style']]}; {BEAT_CUTS[montage['beat_cut_mode']]}; "
@@ -316,6 +338,39 @@ async def cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.edit_message_text(montage_text(), parse_mode="Markdown", reply_markup=kb_montage(st["montage_config"]))
         return
 
+    if data.startswith("speed_mode:"):
+        mode = data.split(":", 1)[1]
+        if mode not in SPEED_ACCENT_MODES:
+            return
+        st["montage_config"]["speed_accents_mode"] = mode
+        if mode == "manual":
+            await query.edit_message_text(
+                "🎚 *Amount*\n\nHow many video segments may receive a speed accent?",
+                parse_mode="Markdown",
+                reply_markup=option_keyboard("speed_amount", SPEED_ACCENT_AMOUNTS),
+            )
+        else:
+            await query.edit_message_text(montage_text(), parse_mode="Markdown", reply_markup=kb_montage(st["montage_config"]))
+        return
+
+    if data.startswith("speed_amount:"):
+        amount = float(data.split(":", 1)[1])
+        if amount in SPEED_ACCENT_AMOUNTS:
+            st["montage_config"]["speed_accents_amount"] = amount
+            await query.edit_message_text(
+                "🚀 *Speed*\n\nChoose video-only playback speed for accented segments.",
+                parse_mode="Markdown",
+                reply_markup=option_keyboard("speed_value", SPEED_ACCENT_SPEEDS),
+            )
+        return
+
+    if data.startswith("speed_value:"):
+        speed = float(data.split(":", 1)[1])
+        if speed in SPEED_ACCENT_SPEEDS:
+            st["montage_config"]["speed_accents_speed"] = speed
+            await query.edit_message_text(montage_text(), parse_mode="Markdown", reply_markup=kb_montage(st["montage_config"]))
+        return
+
     if data.startswith("montage:"):
         choice = data.split(":", 1)[1]
         config = st["montage_config"]
@@ -331,6 +386,14 @@ async def cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
         elif choice == "clip_order_mode":
             config[choice] = cycle(config[choice], list(CLIP_ORDERS))
             await query.edit_message_reply_markup(reply_markup=kb_montage(config))
+        elif choice == "speed_accents_mode":
+            await query.edit_message_text(
+                "⚡ *Speed accents*\n\n"
+                "Selected video segments are sped up under the beat; the music track is never changed.\n"
+                "Use AUTO for quick testing, or MANUAL for direct control.",
+                parse_mode="Markdown",
+                reply_markup=kb_speed_accents_mode(),
+            )
         elif choice == "done":
             await query.edit_message_text(
                 summary_text(st),
