@@ -15,6 +15,7 @@ AUTHORIZED_USER = int(os.environ.get("AUTHORIZED_USER_ID", "0"))
 CLOUD_RUN_URL = os.environ.get("CLOUD_RUN_URL", "")
 
 user_state = {}
+active_jobs = {}
 
 STYLES = {
     "phonk": "🔥 Phonk Universe",
@@ -89,7 +90,13 @@ MONTAGE_DEFAULTS = {
     "speed_accents_speed": 1.25,
 }
 TRANSITIONS = {"cut": "Clean seamless cut", "crossfade": "Crossfade"}
-BEAT_CUTS = {"auto": "Auto", "4_beats": "4 beats", "8_beats": "8 beats", "16_beats": "16 beats"}
+BEAT_CUTS = {
+    "auto": "Auto, mixed smooth rhythm",
+    "4_beats": "4 beats, short fast cuts",
+    "8_beats": "8 beats, medium cuts",
+    "12_beats": "12 beats, balanced smooth cuts",
+    "16_beats": "16 beats, long calm cuts",
+}
 CLIP_ORDERS = {"visual_match": "Visual match", "random": "Random", "quality_weighted": "Quality weighted"}
 SPEED_ACCENT_MODES = {"off": "OFF", "auto": "AUTO", "manual": "MANUAL"}
 SPEED_ACCENT_AMOUNTS = {0.10: "10% of segments", 0.20: "20% of segments", 0.30: "30% of segments"}
@@ -129,6 +136,7 @@ def kb_effects(st: dict) -> InlineKeyboardMarkup:
                     f"{mark} {category.split()[0]} {effect['emoji']} {effect['title']}", callback_data=f"fx:{effect_id}"
                 )])
     rows.append([InlineKeyboardButton("Continue →", callback_data="fx:done")])
+    rows.append([InlineKeyboardButton("Restart setup", callback_data="nav:restart")])
     return InlineKeyboardMarkup(rows)
 
 
@@ -137,13 +145,15 @@ def kb_visualizer_type() -> InlineKeyboardMarkup:
         [[InlineKeyboardButton("🚫 No visualizer", callback_data="vis_type:none")]] + [
         [InlineKeyboardButton(label, callback_data=f"vis_type:{vis_type}")]
         for vis_type, label in VISUALIZER_TYPES.items()
-        ]
+        ] + [[InlineKeyboardButton("Back", callback_data="nav:back"), InlineKeyboardButton("Restart setup", callback_data="nav:restart")]]
     )
 
 
-def option_keyboard(prefix: str, options: dict) -> InlineKeyboardMarkup:
+def option_keyboard(prefix: str, options: dict, navigation: bool = True) -> InlineKeyboardMarkup:
     rows = [[InlineKeyboardButton(label, callback_data=f"{prefix}:{value}")]
             for value, label in options.items()]
+    if navigation:
+        rows.append([InlineKeyboardButton("Back", callback_data="nav:back"), InlineKeyboardButton("Restart setup", callback_data="nav:restart")])
     return InlineKeyboardMarkup(rows)
 
 
@@ -171,6 +181,7 @@ def kb_montage(config: dict) -> InlineKeyboardMarkup:
         [InlineKeyboardButton(f"Clip order: {CLIP_ORDERS[config['clip_order_mode']]}", callback_data="montage:clip_order_mode")],
         [InlineKeyboardButton(f"⚡ Speed accents: {SPEED_ACCENT_MODES[config['speed_accents_mode']]}", callback_data="montage:speed_accents_mode")],
         [InlineKeyboardButton("Review setup →", callback_data="montage:done")],
+        [InlineKeyboardButton("Back", callback_data="nav:back"), InlineKeyboardButton("Restart setup", callback_data="nav:restart")],
     ])
 
 
@@ -193,6 +204,7 @@ def montage_text() -> str:
         "⚡ Speed accents randomly speed up selected video segments under the beat.\n"
         "Use AUTO for quick testing. MANUAL 10-20% at 1.15x-1.25x keeps edits clean.\n"
         "Use 30% at 1.35x-1.50x only for dynamic edits. Audio is never changed."
+        "\n\nBeat auto = mostly 12-beat cuts, some 8-beat cuts, rare 4-beat accents, no 16-beat cuts."
     )
 
 
@@ -201,6 +213,75 @@ def speed_accents_summary(config: dict) -> str:
     if mode != "manual":
         return SPEED_ACCENT_MODES[mode]
     return f"MANUAL, {config['speed_accents_amount']:.0%}, {config['speed_accents_speed']:.2f}x"
+
+
+def set_screen(st: dict, screen: str):
+    current = st.get("screen")
+    if current and current != screen:
+        st.setdefault("history", []).append(current)
+    st["screen"] = screen
+
+
+async def show_screen(query, st: dict, screen: str):
+    st["screen"] = screen
+    if screen == "effects":
+        await query.edit_message_text(
+            f"{STYLES[st['style']]}\n\n✨ *Effects*\n"
+            "Select any combination, or keep a clean render.\n\n"
+            "🎨 Color / Look\n🎞 Texture\n⚡ Energy FX",
+            parse_mode="Markdown",
+            reply_markup=kb_effects(st),
+        )
+    elif screen == "effects_intensity":
+        await query.edit_message_text(
+            "🎚 *Effects intensity*\n\nChoose one strength for all selected effects.\nClean render ignores this setting.",
+            parse_mode="Markdown",
+            reply_markup=option_keyboard("fx_intensity", EFFECT_INTENSITIES),
+        )
+    elif screen == "visualizer_type":
+        await query.edit_message_text(
+            "📊 *Visualizer*\n\nChoose an overlay style. Waveform is the recommended clean option.",
+            parse_mode="Markdown",
+            reply_markup=kb_visualizer_type(),
+        )
+    elif screen == "visualizer_position":
+        vis_type = st["visualizer_config"]["type"]
+        await query.edit_message_text(
+            "📍 *Visualizer placement*" if vis_type in STRIP_VISUALIZERS else "📍 *Visualizer position*",
+            parse_mode="Markdown",
+            reply_markup=option_keyboard("vis_pos", visualizer_positions(vis_type)),
+        )
+    elif screen == "visualizer_size":
+        await query.edit_message_text("📐 *Visualizer size*", parse_mode="Markdown", reply_markup=option_keyboard("vis_size", VISUALIZER_SIZES))
+    elif screen == "visualizer_color":
+        await query.edit_message_text("🎨 *Visualizer color*", parse_mode="Markdown", reply_markup=option_keyboard("vis_color", VISUALIZER_COLORS))
+    elif screen == "visualizer_bg":
+        await query.edit_message_text(
+            "◼ *Visualizer background*\n\nNone has no panel. Soft and Medium add a semi-transparent backing.",
+            parse_mode="Markdown",
+            reply_markup=option_keyboard("vis_bg", VISUALIZER_BACKGROUNDS),
+        )
+    elif screen == "montage":
+        await query.edit_message_text(montage_text(), parse_mode="Markdown", reply_markup=kb_montage(st["montage_config"]))
+    elif screen == "speed_mode":
+        await query.edit_message_text(
+            "⚡ *Speed accents*\n\nSelected video segments are sped up under the beat; the music track is never changed.\n"
+            "Use AUTO for quick testing, or MANUAL for direct control.",
+            parse_mode="Markdown",
+            reply_markup=kb_speed_accents_mode(),
+        )
+    elif screen == "speed_amount":
+        await query.edit_message_text(
+            "🎚 *Amount*\n\nHow many video segments may receive a speed accent?",
+            parse_mode="Markdown",
+            reply_markup=option_keyboard("speed_amount", SPEED_ACCENT_AMOUNTS),
+        )
+    elif screen == "speed_value":
+        await query.edit_message_text(
+            "🚀 *Speed*\n\nChoose video-only playback speed for accented segments.",
+            parse_mode="Markdown",
+            reply_markup=option_keyboard("speed_value", SPEED_ACCENT_SPEEDS),
+        )
 
 
 def summary_text(st: dict) -> str:
@@ -248,6 +329,74 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 
+async def show_status(update: Update, uid: int):
+    job = active_jobs.get(uid)
+    if not job:
+        await update.message.reply_text("No active render job.")
+        return
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.get(job["status_url"], timeout=aiohttp.ClientTimeout(total=15)) as response:
+                if response.status != 200:
+                    await update.message.reply_text(f"Status unavailable for job `{job['job_id']}`.", parse_mode="Markdown")
+                    return
+                data = await response.json(content_type=None)
+    except Exception as exc:
+        await update.message.reply_text(f"Status check failed: {str(exc)[:200]}")
+        return
+    stage = data.get("stage", data.get("status", "unknown"))
+    progress = data.get("progress", "?")
+    message = data.get("message", "")
+    text = f"Job `{job['job_id']}`\nStage: {stage}\nProgress: {progress}%\n{message}"
+    if data.get("clips_downloaded") is not None:
+        text += f"\nClips downloaded: {data.get('clips_downloaded')}/{data.get('clips_found', '?')}"
+    if data.get("clips_analyzed") is not None:
+        text += f"\nClips analyzed: {data.get('clips_analyzed')}"
+    if data.get("current_segment") is not None:
+        text += f"\nSegment: {data.get('current_segment')}/{data.get('total_segments', '?')}"
+    if data.get("download_link"):
+        text += f"\n\nDownload link:\n{data['download_link']}"
+    if stage in {"done", "failed", "canceled"}:
+        active_jobs.pop(uid, None)
+    await update.message.reply_text(text, parse_mode="Markdown")
+
+
+async def status_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    uid = update.effective_user.id
+    if not is_authorized(uid):
+        return
+    await show_status(update, uid)
+
+
+async def cancel_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    uid = update.effective_user.id
+    if not is_authorized(uid):
+        return
+    st = state(uid)
+    if st.get("step") not in {None, "done", "processing"}:
+        user_state[uid] = {}
+        await update.message.reply_text("Setup canceled. Send /start to begin again.")
+        return
+    job = active_jobs.get(uid)
+    if not job:
+        await update.message.reply_text("No active render job to cancel.")
+        return
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.put(
+                job["cancel_url"],
+                data=b"cancel_requested",
+                headers={"Content-Type": "text/plain"},
+                timeout=aiohttp.ClientTimeout(total=15),
+            ) as response:
+                if response.status in {200, 201}:
+                    await update.message.reply_text(f"Cancel requested for job `{job['job_id']}`.", parse_mode="Markdown")
+                else:
+                    await update.message.reply_text(f"Cancel request failed: {response.status}")
+    except Exception as exc:
+        await update.message.reply_text(f"Cancel request failed: {str(exc)[:200]}")
+
+
 async def cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
@@ -256,6 +405,21 @@ async def cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     data = query.data
     st = state(uid)
+    if data == "nav:restart":
+        user_state[uid] = {}
+        await query.edit_message_text(
+            "🎬 *VIDEO MONTAGE BOT*\n\nChoose a style to begin:",
+            parse_mode="Markdown",
+            reply_markup=kb_styles(),
+        )
+        return
+    if data == "nav:back":
+        previous = st.get("history", []).pop() if st.get("history") else None
+        if previous:
+            await show_screen(query, st, previous)
+        else:
+            await query.answer("Nothing to go back to.")
+        return
     if data.startswith("style:"):
         style = data.split(":", 1)[1]
         st.update({
@@ -265,25 +429,15 @@ async def cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "visualizer_config": dict(VISUALIZER_DEFAULTS),
             "montage_config": dict(MONTAGE_DEFAULTS),
         })
-        await query.edit_message_text(
-            f"{STYLES[style]}\n\n✨ *Effects*\n"
-            "Select any combination, or keep a clean render.\n\n"
-            "🎨 Color / Look\n🎞 Texture\n⚡ Energy FX",
-            parse_mode="Markdown",
-            reply_markup=kb_effects(st),
-        )
+        set_screen(st, "effects")
+        await show_screen(query, st, "effects")
         return
 
     if data.startswith("fx:"):
         effect_id = data.split(":", 1)[1]
         if effect_id == "done":
-            await query.edit_message_text(
-                "🎚 *Effects intensity*\n\n"
-                "Choose one strength for all selected effects.\n"
-                "Clean render ignores this setting.",
-                parse_mode="Markdown",
-                reply_markup=option_keyboard("fx_intensity", EFFECT_INTENSITIES),
-            )
+            set_screen(st, "effects_intensity")
+            await show_screen(query, st, "effects_intensity")
         elif effect_id == "clean":
             st["effects_config"] = effects_config()
             await query.edit_message_reply_markup(reply_markup=kb_effects(st))
@@ -296,51 +450,46 @@ async def cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
         intensity = data.split(":", 1)[1]
         if intensity in EFFECT_INTENSITIES:
             st["effects_intensity"] = intensity
-            await query.edit_message_text(
-                "📊 *Visualizer*\n\nChoose an overlay style. Waveform is the recommended clean option.",
-                parse_mode="Markdown",
-                reply_markup=kb_visualizer_type(),
-            )
+            set_screen(st, "visualizer_type")
+            await show_screen(query, st, "visualizer_type")
         return
 
     if data.startswith("vis_type:"):
         vis_type = data.split(":", 1)[1]
         if vis_type == "none":
             st["visualizer_config"]["enabled"] = False
-            await query.edit_message_text(montage_text(), parse_mode="Markdown", reply_markup=kb_montage(st["montage_config"]))
+            set_screen(st, "montage")
+            await show_screen(query, st, "montage")
         elif vis_type in VISUALIZER_TYPES:
             positions = visualizer_positions(vis_type)
             default_position = next(iter(positions))
             st["visualizer_config"].update({"enabled": True, "type": vis_type, "position": default_position})
-            await query.edit_message_text(
-                "📍 *Visualizer placement*" if vis_type in STRIP_VISUALIZERS else "📍 *Visualizer position*",
-                parse_mode="Markdown",
-                reply_markup=option_keyboard("vis_pos", positions),
-            )
+            set_screen(st, "visualizer_position")
+            await show_screen(query, st, "visualizer_position")
         return
 
     if data.startswith("vis_pos:"):
         st["visualizer_config"]["position"] = data.split(":", 1)[1]
-        await query.edit_message_text("📐 *Visualizer size*", parse_mode="Markdown", reply_markup=option_keyboard("vis_size", VISUALIZER_SIZES))
+        set_screen(st, "visualizer_size")
+        await show_screen(query, st, "visualizer_size")
         return
 
     if data.startswith("vis_size:"):
         st["visualizer_config"]["size"] = data.split(":", 1)[1]
-        await query.edit_message_text("🎨 *Visualizer color*", parse_mode="Markdown", reply_markup=option_keyboard("vis_color", VISUALIZER_COLORS))
+        set_screen(st, "visualizer_color")
+        await show_screen(query, st, "visualizer_color")
         return
 
     if data.startswith("vis_color:"):
         st["visualizer_config"]["color"] = data.split(":", 1)[1]
-        await query.edit_message_text(
-            "◼ *Visualizer background*\n\nNone has no panel. Soft and Medium add a semi-transparent backing.",
-            parse_mode="Markdown",
-            reply_markup=option_keyboard("vis_bg", VISUALIZER_BACKGROUNDS),
-        )
+        set_screen(st, "visualizer_bg")
+        await show_screen(query, st, "visualizer_bg")
         return
 
     if data.startswith("vis_bg:"):
         st["visualizer_config"]["background_opacity"] = data.split(":", 1)[1]
-        await query.edit_message_text(montage_text(), parse_mode="Markdown", reply_markup=kb_montage(st["montage_config"]))
+        set_screen(st, "montage")
+        await show_screen(query, st, "montage")
         return
 
     if data.startswith("speed_mode:"):
@@ -349,31 +498,27 @@ async def cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
         st["montage_config"]["speed_accents_mode"] = mode
         if mode == "manual":
-            await query.edit_message_text(
-                "🎚 *Amount*\n\nHow many video segments may receive a speed accent?",
-                parse_mode="Markdown",
-                reply_markup=option_keyboard("speed_amount", SPEED_ACCENT_AMOUNTS),
-            )
+            set_screen(st, "speed_amount")
+            await show_screen(query, st, "speed_amount")
         else:
-            await query.edit_message_text(montage_text(), parse_mode="Markdown", reply_markup=kb_montage(st["montage_config"]))
+            set_screen(st, "montage")
+            await show_screen(query, st, "montage")
         return
 
     if data.startswith("speed_amount:"):
         amount = float(data.split(":", 1)[1])
         if amount in SPEED_ACCENT_AMOUNTS:
             st["montage_config"]["speed_accents_amount"] = amount
-            await query.edit_message_text(
-                "🚀 *Speed*\n\nChoose video-only playback speed for accented segments.",
-                parse_mode="Markdown",
-                reply_markup=option_keyboard("speed_value", SPEED_ACCENT_SPEEDS),
-            )
+            set_screen(st, "speed_value")
+            await show_screen(query, st, "speed_value")
         return
 
     if data.startswith("speed_value:"):
         speed = float(data.split(":", 1)[1])
         if speed in SPEED_ACCENT_SPEEDS:
             st["montage_config"]["speed_accents_speed"] = speed
-            await query.edit_message_text(montage_text(), parse_mode="Markdown", reply_markup=kb_montage(st["montage_config"]))
+            set_screen(st, "montage")
+            await show_screen(query, st, "montage")
         return
 
     if data.startswith("montage:"):
@@ -392,13 +537,8 @@ async def cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
             config[choice] = cycle(config[choice], list(CLIP_ORDERS))
             await query.edit_message_reply_markup(reply_markup=kb_montage(config))
         elif choice == "speed_accents_mode":
-            await query.edit_message_text(
-                "⚡ *Speed accents*\n\n"
-                "Selected video segments are sped up under the beat; the music track is never changed.\n"
-                "Use AUTO for quick testing, or MANUAL for direct control.",
-                parse_mode="Markdown",
-                reply_markup=kb_speed_accents_mode(),
-            )
+            set_screen(st, "speed_mode")
+            await show_screen(query, st, "speed_mode")
         elif choice == "done":
             await query.edit_message_text(
                 summary_text(st),
@@ -443,6 +583,9 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def launch_render_job(update: Update, uid: int):
     st = state(uid)
+    if uid in active_jobs:
+        await update.message.reply_text("A render job is already active. Use /status or /cancel before starting another.")
+        return
     message = await update.message.reply_text("🚀 Sending your montage job to the renderer...")
     if not CLOUD_RUN_URL:
         await message.edit_text("CLOUD_RUN_URL is not configured.")
@@ -467,6 +610,11 @@ async def launch_render_job(update: Update, uid: int):
             ) as response:
                 if response.status == 200:
                     result = await response.json()
+                    active_jobs[uid] = {
+                        "job_id": result.get("job_id", "unknown"),
+                        "status_url": result.get("status_url"),
+                        "cancel_url": result.get("cancel_url"),
+                    }
                     await message.edit_text(
                         f"0% Job accepted.\nJob ID: `{result.get('job_id', 'unknown')}`",
                         parse_mode="Markdown",
@@ -492,6 +640,8 @@ def main():
     app = Application.builder().token(TOKEN).build()
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("help", help_cmd))
+    app.add_handler(CommandHandler("status", status_cmd))
+    app.add_handler(CommandHandler("cancel", cancel_cmd))
     app.add_handler(CallbackQueryHandler(cb))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
     logger.info("Video Bot started")
