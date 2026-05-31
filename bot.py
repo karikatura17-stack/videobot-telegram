@@ -622,7 +622,7 @@ async def launch_render_job(update: Update, uid: int):
                 else:
                     await message.edit_text(f"Renderer returned an error: {response.status}")
     except Exception as exc:
-        logger.error("Cloud Run error: %s", exc)
+        logger.error("Cloud Run error: %s", exc, exc_info=True)
         await message.edit_text(f"Cannot contact the rendering service: {str(exc)[:200]}")
     st["step"] = "done"
 
