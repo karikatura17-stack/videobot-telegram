@@ -2,6 +2,8 @@
 
 import logging
 import os
+import re
+from datetime import datetime, timezone
 
 import aiohttp
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
@@ -16,6 +18,13 @@ CLOUD_RUN_URL = os.environ.get("CLOUD_RUN_URL", "")
 
 user_state = {}
 active_jobs = {}
+
+TERMINAL_JOB_STAGES = {"done", "failed", "canceled", "cancel_requested", "completed", "error"}
+ACTIVE_JOB_STAGES = {
+    "queued", "downloading", "analyzing", "preparing_segments", "assembling_chunk",
+    "assembling_raw_video", "final_render", "uploading",
+}
+STALE_JOB_SECONDS = int(os.environ.get("STALE_JOB_SECONDS", "28800"))
 
 STYLES = {
     "phonk": "🔥 Phonk Universe",
@@ -88,6 +97,10 @@ MONTAGE_DEFAULTS = {
     "speed_accents_mode": "off",
     "speed_accents_amount": 0.20,
     "speed_accents_speed": 1.25,
+    "zoom_pulse": "off",
+    "punch_zoom": "off",
+    "bass_shake": "off",
+    "flash_hit": "off",
 }
 TRANSITIONS = {"cut": "Clean seamless cut", "crossfade": "Crossfade"}
 BEAT_CUTS = {
@@ -101,6 +114,13 @@ CLIP_ORDERS = {"visual_match": "Visual match", "random": "Random", "quality_weig
 SPEED_ACCENT_MODES = {"off": "OFF", "auto": "AUTO", "manual": "MANUAL"}
 SPEED_ACCENT_AMOUNTS = {0.10: "10% of segments", 0.20: "20% of segments", 0.30: "30% of segments"}
 SPEED_ACCENT_SPEEDS = {1.15: "1.15x", 1.25: "1.25x", 1.35: "1.35x", 1.50: "1.50x"}
+MOTION_FX_LEVELS = {"off": "OFF", "soft": "SOFT", "normal": "NORMAL", "strong": "STRONG"}
+MOTION_FX = {
+    "zoom_pulse": "Zoom pulse",
+    "punch_zoom": "Punch zoom",
+    "bass_shake": "Bass shake",
+    "flash_hit": "Flash hit",
+}
 
 
 def is_authorized(uid: int) -> bool:
@@ -111,6 +131,74 @@ def state(uid: int) -> dict:
     if uid not in user_state:
         user_state[uid] = {}
     return user_state[uid]
+
+
+def job_stage(data: dict | None) -> str:
+    if not data:
+        return "unknown"
+    return str(data.get("stage") or data.get("status") or "unknown").lower()
+
+
+def parse_updated_at(value: str | None) -> datetime | None:
+    if not value:
+        return None
+    try:
+        return datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+
+
+def is_stale_status(data: dict | None) -> bool:
+    updated_at = parse_updated_at((data or {}).get("updated_at"))
+    if not updated_at:
+        return False
+    age = (datetime.now(timezone.utc) - updated_at).total_seconds()
+    return age > STALE_JOB_SECONDS
+
+
+def detect_drive_audio_label(url: str) -> str:
+    match = re.search(r"/file/d/([a-zA-Z0-9_-]+)", url) or re.search(r"id=([a-zA-Z0-9_-]+)", url)
+    return f"Google Drive file {match.group(1)}" if match else "Google Drive audio file"
+
+
+async def fetch_job_status(job: dict) -> tuple[dict | None, str | None]:
+    status_url = job.get("status_url")
+    if not status_url and CLOUD_RUN_URL and job.get("job_id"):
+        status_url = f"{CLOUD_RUN_URL}/status/{job['job_id']}"
+    if not status_url:
+        return None, "No status URL is available for this job."
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.get(status_url, timeout=aiohttp.ClientTimeout(total=15)) as response:
+                if response.status == 404:
+                    return None, "Status file was not found yet."
+                if response.status != 200:
+                    return None, f"Status request returned HTTP {response.status}."
+                return await response.json(content_type=None), None
+    except Exception as exc:
+        return None, str(exc)[:200]
+
+
+async def refresh_active_job(uid: int) -> tuple[bool, dict | None, str | None]:
+    """Return whether a real active job still exists, clearing stale local state."""
+    job = active_jobs.get(uid)
+    if not job:
+        return False, None, None
+    data, error = await fetch_job_status(job)
+    if data:
+        stage = job_stage(data)
+        if stage in TERMINAL_JOB_STAGES:
+            active_jobs.pop(uid, None)
+            return False, data, None
+        if is_stale_status(data):
+            active_jobs.pop(uid, None)
+            return False, data, "Previous job status is stale and was cleared."
+        return True, data, None
+    created_at = parse_updated_at(job.get("created_at"))
+    if created_at and (datetime.now(timezone.utc) - created_at).total_seconds() > STALE_JOB_SECONDS:
+        active_jobs.pop(uid, None)
+        return False, None, "Previous local job record is stale and was cleared."
+    return True, None, error or "Could not read job status."
 
 
 def kb_styles() -> InlineKeyboardMarkup:
@@ -180,6 +268,10 @@ def kb_montage(config: dict) -> InlineKeyboardMarkup:
         [InlineKeyboardButton(f"Beat cut: {BEAT_CUTS[config['beat_cut_mode']]}", callback_data="montage:beat_cut_mode")],
         [InlineKeyboardButton(f"Clip order: {CLIP_ORDERS[config['clip_order_mode']]}", callback_data="montage:clip_order_mode")],
         [InlineKeyboardButton(f"⚡ Speed accents: {SPEED_ACCENT_MODES[config['speed_accents_mode']]}", callback_data="montage:speed_accents_mode")],
+        [InlineKeyboardButton(f"🎥 Zoom pulse: {MOTION_FX_LEVELS[config.get('zoom_pulse', 'off')]}", callback_data="montage:zoom_pulse")],
+        [InlineKeyboardButton(f"🎥 Punch zoom: {MOTION_FX_LEVELS[config.get('punch_zoom', 'off')]}", callback_data="montage:punch_zoom")],
+        [InlineKeyboardButton(f"🎥 Bass shake: {MOTION_FX_LEVELS[config.get('bass_shake', 'off')]}", callback_data="montage:bass_shake")],
+        [InlineKeyboardButton(f"🎥 Flash hit: {MOTION_FX_LEVELS[config.get('flash_hit', 'off')]}", callback_data="montage:flash_hit")],
         [InlineKeyboardButton("Review setup →", callback_data="montage:done")],
         [InlineKeyboardButton("Back", callback_data="nav:back"), InlineKeyboardButton("Restart setup", callback_data="nav:restart")],
     ])
@@ -187,6 +279,13 @@ def kb_montage(config: dict) -> InlineKeyboardMarkup:
 
 def kb_speed_accents_mode() -> InlineKeyboardMarkup:
     return option_keyboard("speed_mode", SPEED_ACCENT_MODES)
+
+
+def kb_audio_confirm() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("Start render", callback_data="setup:render")],
+        [InlineKeyboardButton("Back", callback_data="setup:audio_back"), InlineKeyboardButton("Cancel setup", callback_data="setup:cancel")],
+    ])
 
 
 def cycle(current: str, choices: list[str]) -> str:
@@ -204,6 +303,7 @@ def montage_text() -> str:
         "⚡ Speed accents randomly speed up selected video segments under the beat.\n"
         "Use AUTO for quick testing. MANUAL 10-20% at 1.15x-1.25x keeps edits clean.\n"
         "Use 30% at 1.35x-1.50x only for dynamic edits. Audio is never changed."
+        "\n\n🎥 Motion FX are optional music-video movement effects. Keep them OFF for the current clean behavior."
         "\n\nBeat auto = mostly 12-beat cuts, some 8-beat cuts, rare 4-beat accents, no 16-beat cuts."
     )
 
@@ -213,6 +313,15 @@ def speed_accents_summary(config: dict) -> str:
     if mode != "manual":
         return SPEED_ACCENT_MODES[mode]
     return f"MANUAL, {config['speed_accents_amount']:.0%}, {config['speed_accents_speed']:.2f}x"
+
+
+def motion_fx_summary(config: dict) -> str:
+    enabled = [
+        f"{label}: {MOTION_FX_LEVELS[config.get(key, 'off')]}"
+        for key, label in MOTION_FX.items()
+        if config.get(key, "off") != "off"
+    ]
+    return "; ".join(enabled) if enabled else "OFF"
 
 
 def set_screen(st: dict, screen: str):
@@ -308,6 +417,7 @@ def summary_text(st: dict) -> str:
         f"{' (ignored for clean render)' if not selected_effects else ''}\n"
         f"*Visualizer:* {visualizer}\n"
         f"*Speed accents:* {speed_accents_summary(montage)}\n"
+        f"*Motion FX:* {motion_fx_summary(montage)}\n"
         f"*Montage:* mirror {on_off(montage['allow_mirror'])}, reverse {on_off(montage['allow_reverse'])}, "
         f"mirror+reverse {on_off(montage['allow_mirror_reverse'])}, random trim {on_off(montage['allow_random_trim'])}; "
         f"{TRANSITIONS[montage['transition_style']]}; {BEAT_CUTS[montage['beat_cut_mode']]}; "
@@ -318,6 +428,19 @@ def summary_text(st: dict) -> str:
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     uid = update.effective_user.id
     if not is_authorized(uid):
+        return
+    is_active, data, error = await refresh_active_job(uid)
+    if is_active:
+        if data:
+            await update.message.reply_text(
+                f"A render job is still active.\nStage: {job_stage(data)}\nProgress: {data.get('progress', '?')}%\n\n"
+                "Use /status or /cancel. If this looks wrong, use /reset.",
+            )
+        else:
+            await update.message.reply_text(
+                f"I could not verify the previous job status: {error}\n\n"
+                "Use /status, /cancel, or /reset to clear local Telegram state.",
+            )
         return
     user_state[uid] = {}
     await update.message.reply_text(
@@ -334,17 +457,15 @@ async def show_status(update: Update, uid: int):
     if not job:
         await update.message.reply_text("No active render job.")
         return
-    try:
-        async with aiohttp.ClientSession() as session:
-            async with session.get(job["status_url"], timeout=aiohttp.ClientTimeout(total=15)) as response:
-                if response.status != 200:
-                    await update.message.reply_text(f"Status unavailable for job `{job['job_id']}`.", parse_mode="Markdown")
-                    return
-                data = await response.json(content_type=None)
-    except Exception as exc:
-        await update.message.reply_text(f"Status check failed: {str(exc)[:200]}")
+    data, error = await fetch_job_status(job)
+    if not data:
+        await update.message.reply_text(
+            f"Status unavailable for job `{job['job_id']}`: {error}\n\n"
+            "If the job is no longer running, use /reset to clear local Telegram state.",
+            parse_mode="Markdown",
+        )
         return
-    stage = data.get("stage", data.get("status", "unknown"))
+    stage = job_stage(data)
     progress = data.get("progress", "?")
     message = data.get("message", "")
     text = f"Job `{job['job_id']}`\nStage: {stage}\nProgress: {progress}%\n{message}"
@@ -356,8 +477,9 @@ async def show_status(update: Update, uid: int):
         text += f"\nSegment: {data.get('current_segment')}/{data.get('total_segments', '?')}"
     if data.get("download_link"):
         text += f"\n\nDownload link:\n{data['download_link']}"
-    if stage in {"done", "failed", "canceled"}:
+    if stage in TERMINAL_JOB_STAGES or is_stale_status(data):
         active_jobs.pop(uid, None)
+        text += "\n\nLocal active job state cleared."
     await update.message.reply_text(text, parse_mode="Markdown")
 
 
@@ -390,11 +512,22 @@ async def cancel_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 timeout=aiohttp.ClientTimeout(total=15),
             ) as response:
                 if response.status in {200, 201}:
+                    active_jobs.pop(uid, None)
+                    user_state[uid] = {}
                     await update.message.reply_text(f"Cancel requested for job `{job['job_id']}`.", parse_mode="Markdown")
                 else:
                     await update.message.reply_text(f"Cancel request failed: {response.status}")
     except Exception as exc:
         await update.message.reply_text(f"Cancel request failed: {str(exc)[:200]}")
+
+
+async def reset_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    uid = update.effective_user.id
+    if not is_authorized(uid):
+        return
+    user_state.pop(uid, None)
+    active_jobs.pop(uid, None)
+    await update.message.reply_text("State reset. You can start a new render with /start.")
 
 
 async def cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -412,6 +545,19 @@ async def cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
             parse_mode="Markdown",
             reply_markup=kb_styles(),
         )
+        return
+    if data == "setup:cancel":
+        user_state[uid] = {}
+        await query.edit_message_text("Setup canceled. Send /start to begin again.")
+        return
+    if data == "setup:audio_back":
+        st["step"] = "awaiting_audio_link"
+        await query.edit_message_text("Send the correct Google Drive link for your MP3 track.")
+        return
+    if data == "setup:render":
+        st["step"] = "processing"
+        await query.edit_message_text("Starting render...")
+        await launch_render_job(query.message, uid)
         return
     if data == "nav:back":
         previous = st.get("history", []).pop() if st.get("history") else None
@@ -539,6 +685,9 @@ async def cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
         elif choice == "speed_accents_mode":
             set_screen(st, "speed_mode")
             await show_screen(query, st, "speed_mode")
+        elif choice in MOTION_FX:
+            config[choice] = cycle(config.get(choice, "off"), list(MOTION_FX_LEVELS))
+            await query.edit_message_reply_markup(reply_markup=kb_montage(config))
         elif choice == "done":
             await query.edit_message_text(
                 summary_text(st),
@@ -575,18 +724,32 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text("Please send a Google Drive audio file link.")
             return
         st["audio_link"] = text
-        st["step"] = "processing"
-        await launch_render_job(update, uid)
+        st["audio_label"] = detect_drive_audio_label(text)
+        st["step"] = "confirm_audio"
+        await update.message.reply_text(
+            f"Audio file detected: {st['audio_label']}\n\nStart render with this track?",
+            reply_markup=kb_audio_confirm(),
+        )
     else:
         await update.message.reply_text("Send /start to create a new montage.")
 
 
-async def launch_render_job(update: Update, uid: int):
+async def launch_render_job(message_source, uid: int):
     st = state(uid)
-    if uid in active_jobs:
-        await update.message.reply_text("A render job is already active. Use /status or /cancel before starting another.")
+    is_active, data, error = await refresh_active_job(uid)
+    if is_active:
+        if data:
+            await message_source.reply_text(
+                f"A render job is already active.\nStage: {job_stage(data)}\nProgress: {data.get('progress', '?')}%\n\n"
+                "Use /status or /cancel before starting another. If this looks stale, use /reset.",
+            )
+        else:
+            await message_source.reply_text(
+                f"I could not verify the previous job status: {error}\n\n"
+                "Use /status, /cancel, or /reset to clear local Telegram state.",
+            )
         return
-    message = await update.message.reply_text("🚀 Sending your montage job to the renderer...")
+    message = await message_source.reply_text("🚀 Sending your montage job to the renderer...")
     if not CLOUD_RUN_URL:
         await message.edit_text("CLOUD_RUN_URL is not configured.")
         return
@@ -614,6 +777,7 @@ async def launch_render_job(update: Update, uid: int):
                         "job_id": result.get("job_id", "unknown"),
                         "status_url": result.get("status_url"),
                         "cancel_url": result.get("cancel_url"),
+                        "created_at": datetime.now(timezone.utc).isoformat(),
                     }
                     await message.edit_text(
                         f"0% Job accepted.\nJob ID: `{result.get('job_id', 'unknown')}`",
@@ -642,6 +806,7 @@ def main():
     app.add_handler(CommandHandler("help", help_cmd))
     app.add_handler(CommandHandler("status", status_cmd))
     app.add_handler(CommandHandler("cancel", cancel_cmd))
+    app.add_handler(CommandHandler("reset", reset_cmd))
     app.add_handler(CallbackQueryHandler(cb))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
     logger.info("Video Bot started")
