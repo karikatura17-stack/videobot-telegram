@@ -180,7 +180,7 @@ async def fetch_job_status(job: dict) -> tuple[dict | None, str | None]:
 
 
 async def refresh_active_job(uid: int) -> tuple[bool, dict | None, str | None]:
-    """Return whether a real active job still exists, clearing stale local state."""
+    """Return whether a real active job still exists, clearing only terminal local state."""
     job = active_jobs.get(uid)
     if not job:
         return False, None, None
@@ -191,8 +191,7 @@ async def refresh_active_job(uid: int) -> tuple[bool, dict | None, str | None]:
             active_jobs.pop(uid, None)
             return False, data, None
         if is_stale_status(data):
-            active_jobs.pop(uid, None)
-            return False, data, "Previous job status is stale and was cleared."
+            return True, data, "Previous job status is stale; use /status, /cancel, or /reset."
         return True, data, None
     created_at = parse_updated_at(job.get("created_at"))
     if created_at and (datetime.now(timezone.utc) - created_at).total_seconds() > STALE_JOB_SECONDS:
@@ -432,9 +431,10 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     is_active, data, error = await refresh_active_job(uid)
     if is_active:
         if data:
+            stale_note = f"\n\n{error}" if error else ""
             await update.message.reply_text(
                 f"A render job is still active.\nStage: {job_stage(data)}\nProgress: {data.get('progress', '?')}%\n\n"
-                "Use /status or /cancel. If this looks wrong, use /reset.",
+                f"Use /status or /cancel. If this looks wrong, use /reset.{stale_note}",
             )
         else:
             await update.message.reply_text(
@@ -475,12 +475,29 @@ async def show_status(update: Update, uid: int):
         text += f"\nClips analyzed: {data.get('clips_analyzed')}"
     if data.get("current_segment") is not None:
         text += f"\nSegment: {data.get('current_segment')}/{data.get('total_segments', '?')}"
+    if data.get("unique_clips_used") is not None:
+        text += (
+            f"\nUnique source clips: {data.get('unique_clips_used')}/"
+            f"{data.get('source_clips_available', '?')}"
+        )
+    if data.get("segments_rendered") is not None:
+        text += f"\nMontage segments: {data.get('segments_rendered')}"
+    if data.get("clips_rejected") is not None:
+        text += f"\nRejected clips: {data.get('clips_rejected')}"
+    if data.get("output_resolution"):
+        text += f"\nOutput: {data.get('output_resolution')} at {data.get('output_fps', 30)} fps"
     if data.get("download_link"):
         text += f"\n\nDownload link:\n{data['download_link']}"
-    if stage in TERMINAL_JOB_STAGES or is_stale_status(data):
+    if stage in TERMINAL_JOB_STAGES:
         active_jobs.pop(uid, None)
         text += "\n\nLocal active job state cleared."
-    await update.message.reply_text(text, parse_mode="Markdown")
+    elif is_stale_status(data):
+        text += (
+            "\n\nWarning: this status is stale and still shows an active stage. "
+            "The render may be hung or the Cloud Run Job may have ended without writing a final status. "
+            "Check Cloud Run executions, or use /cancel or /reset."
+        )
+    await update.message.reply_text(text)
 
 
 async def status_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -739,9 +756,10 @@ async def launch_render_job(message_source, uid: int):
     is_active, data, error = await refresh_active_job(uid)
     if is_active:
         if data:
+            stale_note = f"\n\n{error}" if error else ""
             await message_source.reply_text(
                 f"A render job is already active.\nStage: {job_stage(data)}\nProgress: {data.get('progress', '?')}%\n\n"
-                "Use /status or /cancel before starting another. If this looks stale, use /reset.",
+                f"Use /status or /cancel before starting another. If this looks stale, use /reset.{stale_note}",
             )
         else:
             await message_source.reply_text(
